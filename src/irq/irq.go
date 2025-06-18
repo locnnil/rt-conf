@@ -49,7 +49,15 @@ var procIRQ = model.ProcIRQ
 var sysKernelIRQ = model.SysKernelIRQ
 
 var writeFile = func(path string, content []byte, perm os.FileMode) error {
-	return os.WriteFile(path, content, perm)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(content)
+	if err1 := f.Close(); err1 != nil && err == nil {
+		err = err1
+	}
+	return err
 }
 
 // Write IRQ affinity
