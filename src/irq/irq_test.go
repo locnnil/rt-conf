@@ -354,3 +354,76 @@ func TestApplyIRQConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestGetActiveIRQListFromFile(t *testing.T) {
+	type testCase struct {
+		name     string
+		content  string
+		expected []int
+	}
+
+	tests := []testCase{
+		{
+			name: "basic IRQs",
+			content: `
+           CPU0       CPU1
+  0:        123        321  IO-APIC-edge      timer
+  1:          0          0  IO-APIC-edge      keyboard
+NMI:         0          0   Non-maskable interrupts
+LOC:         0          0   Local timer interrupts
+  5:         55         66  PCI-MSI-edge      eth0
+`,
+			expected: []int{0, 1, 5},
+		},
+		{
+			name: "non-numeric IRQs only",
+			content: `
+NMI:         0          0   Non-maskable interrupts
+LOC:         0          0   Local timer interrupts
+`,
+			expected: []int{},
+		},
+		{
+			name:     "empty file",
+			content:  ``,
+			expected: []int{},
+		},
+		{
+			name: "mixed valid and junk",
+			content: `
+not-an-irq: some text
+  44: 123 456  PCI-MSI-edge  eth0
+junk
+  7:  789 654  PCI-MSI-edge  wifi
+MCE:  0 0  Machine check exception
+`,
+			expected: []int{7, 44},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpdir := t.TempDir()
+			fpath := filepath.Join(tmpdir, "interrupts")
+
+			if err := os.WriteFile(fpath, []byte(tc.content), 0644); err != nil {
+				t.Fatalf("failed to write temp file: %v", err)
+			}
+
+			got, err := getActiveIRQlistFromFile(fpath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(got) != len(tc.expected) {
+				t.Errorf("expected %v, got %v", tc.expected, got)
+			}
+
+			for i := range tc.expected {
+				if got[i] != tc.expected[i] {
+					t.Errorf("expected %v, got %v", tc.expected, got)
+				}
+			}
+		})
+	}
+}

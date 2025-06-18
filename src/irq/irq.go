@@ -1,11 +1,13 @@
 package irq
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -70,66 +72,96 @@ func (w *realIRQReaderWriter) WriteCPUAffinity(irqNum int, cpus string) (success
 	return true, false, nil
 }
 
+func getActiveIRQlistFromFile(path string) ([]int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %v", path, err)
+	}
+	defer file.Close()
+
+	var irqList []int
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if !strings.Contains(line, ":") {
+			continue
+		}
+
+		parts := strings.SplitN(line, ":", 2)
+		irqStr := strings.TrimSpace(parts[0])
+
+		irq, err := strconv.Atoi(irqStr)
+		if err != nil {
+			continue
+		}
+
+		irqList = append(irqList, irq)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan %s: %v", path, err)
+	}
+
+	sort.Ints(irqList)
+	return irqList, nil
+}
+
 func (r *realIRQReaderWriter) ReadIRQs() ([]IRQInfo, error) {
 	var irqInfos []IRQInfo
 
-	// Read the directories in /sys/kernel/irq
-	dirEntries, err := os.ReadDir(sysKernelIRQ)
+	irqList, err := getActiveIRQlistFromFile("/proc/interrupts")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read active IRQs: %v", err)
 	}
+	log.Println("Found active IRQs:\n", irqList)
 
-	for _, entry := range dirEntries {
-		if entry.IsDir() {
-			nonActiveIRQ := true
-			number, err := strconv.ParseInt(entry.Name(), 10, 32)
+	for _, entry := range irqList {
+		// if entry.IsDir() {
+		nonActiveIRQ := true
+		var irqInfo IRQInfo
+		irqInfo.Number = entry
+
+		// Read files in the IRQ directory
+		files := []string{
+			"actions", "chip_name", "name", "type", "wakeup",
+		}
+		for _, file := range files {
+			filePath := filepath.Join(
+				sysKernelIRQ, strconv.Itoa(entry), file,
+			)
+			content, err := os.ReadFile(filePath)
 			if err != nil {
-				/* This may happen if the kernel IRQ structure
-				evolves sometime or somehow in the future */
-				continue // Skip if not a valid number
+				// TODO: Log warning here
+				continue
 			}
-			var irqInfo IRQInfo
-			irqInfo.Number = int(number)
-
-			// Read files in the IRQ directory
-			files := []string{
-				"actions", "chip_name", "name", "type", "wakeup",
-			}
-			for _, file := range files {
-				filePath := filepath.Join(
-					sysKernelIRQ, entry.Name(), file,
-				)
-				content, err := os.ReadFile(filePath)
-				if err != nil {
-					// TODO: Log warning here
-					continue
+			c := strings.TrimSuffix(
+				strings.TrimSpace(string(content)), "\n")
+			switch file {
+			case "actions":
+				if c == "" {
+					debug.Printf("Ignoring IRQ %s: (no actions)", filePath)
+					nonActiveIRQ = true
+					break
 				}
-				c := strings.TrimSuffix(
-					strings.TrimSpace(string(content)), "\n")
-				switch file {
-				case "actions":
-					if c == "" {
-						debug.Printf("Ignoring IRQ %s: (no actions)", filePath)
-						nonActiveIRQ = true
-						break
-					}
-					nonActiveIRQ = false
-					irqInfo.Actions = c
-				case "chip_name":
-					irqInfo.ChipName = c
-				case "name":
-					irqInfo.Name = c
-				case "type":
-					irqInfo.Type = c
-				case "wakeup":
-					irqInfo.Wakeup = c
-				}
-			}
-			// Only append active IRQs
-			if !nonActiveIRQ {
-				irqInfos = append(irqInfos, irqInfo)
+				nonActiveIRQ = false
+				irqInfo.Actions = c
+			case "chip_name":
+				irqInfo.ChipName = c
+			case "name":
+				irqInfo.Name = c
+			case "type":
+				irqInfo.Type = c
+			case "wakeup":
+				irqInfo.Wakeup = c
 			}
 		}
+		// Only append active IRQs
+		if !nonActiveIRQ {
+			irqInfos = append(irqInfos, irqInfo)
+		}
+		// }
 	}
 	return irqInfos, err
 }
